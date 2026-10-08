@@ -1,0 +1,136 @@
+name: Deploy beta
+
+# Publishes one tagged commit of KilgoreTrout853/dragoncon-planner as the
+# beta, to this repository's gh-pages branch and so to
+# https://kilgoretrout853.github.io/dragoncon-planner-beta/.
+#
+# By hand alone: there is no timer and no push trigger, so nothing that
+# happens in the app's repository moves this site. A run is given a tag of
+# the app's repository whose name starts "beta-". It builds that tag's commit
+# with DC_CHANNEL=beta - the mark, the worker's own cache name, storage keys
+# of its own - at the beta's moment and with the email step off (the app's
+# DECISIONS #99), publishes it, and records the tag and its commit in
+# deployed.txt on main. A run for the tag already deployed publishes it
+# again: that is how a build is redone.
+#
+# The app's repository is public, so this needs no credential of its own. The
+# two backend values are a project's address and its public key, which the
+# build inlines in a page anyone can read: repository variables, never
+# secrets.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'A tag of the app''s repository whose name starts "beta-", like beta-1'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: deploy-beta
+  cancel-in-progress: false
+
+env:
+  SOURCE_REPO: KilgoreTrout853/dragoncon-planner
+  TAG: ${{ inputs.tag }}
+  DC_CHANNEL: beta
+  DC_NOW: "2026-09-01T10:00"
+  DC_EMAIL: "off"
+  DC_SUPABASE_URL: ${{ vars.DC_SUPABASE_URL }}
+  DC_SUPABASE_KEY: ${{ vars.DC_SUPABASE_KEY }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    steps:
+      # The branch as it stands when the run starts, not the commit the run
+      # was asked at: a run that waited behind another records on top of it.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.ref }}
+
+      # A branch's name, a bare sha and a tag that is not there each stop the
+      # run here, before anything is built. The name is asked for under
+      # refs/tags/ alone, so a branch called beta-1 does not answer for it;
+      # an annotated tag answers with the commit it names.
+      - name: Is it a beta tag of the app?
+        id: src
+        run: |
+          if [[ ! "$TAG" =~ ^beta-[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::Not a beta tag. A tag of $SOURCE_REPO whose name starts \"beta-\" is wanted, like beta-1: letters, digits, dots, dashes and underscores after it. A branch's name or a sha is not one."
+            exit 1
+          fi
+          refs=$(git ls-remote "https://github.com/$SOURCE_REPO.git" "refs/tags/$TAG" "refs/tags/$TAG^{}")
+          sha=$(printf '%s\n' "$refs" | awk -v tag="refs/tags/$TAG" '$2 == tag "^{}" { peeled = $1 } $2 == tag { plain = $1 } END { print (peeled ? peeled : plain) }')
+          if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::$SOURCE_REPO has no tag $TAG. Nothing was built."
+            exit 1
+          fi
+          last=$(cat deployed.txt 2>/dev/null || true)
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Deploying $TAG at $sha (last: ${last:-none})."
+
+      # The commit the tag named a moment ago, by its sha: what is built is
+      # what is recorded.
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          ref: ${{ steps.src.outputs.sha }}
+          path: src
+
+      # Node's version and the lockfile are the checkout's own.
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: src/.nvmrc
+          cache: npm
+          cache-dependency-path: src/package-lock.json
+
+      - name: Install the app's dependencies
+        working-directory: src
+        run: npm ci
+
+      # The channel, the moment, the email step and the backend come from the
+      # workflow's env above. The build id is the tag, so the corner mark and
+      # the device readout say which beta a screenshot came from. ../site is
+      # beside the checkout, where the publish step looks.
+      - name: Build the stamped copy
+        working-directory: src
+        env:
+          DC_BUILD: ${{ inputs.tag }}
+        run: npm run build -- --outDir ../site
+
+      # A commit from before the app read DC_NOW and DC_EMAIL builds without
+      # a word, at the real clock and with the email step on. That is not a
+      # beta, and it is stopped here, before anything is published.
+      - name: Is it the beta's build?
+        run: |
+          grep -q '<meta name="dc-channel" content="beta">' site/index.html || { echo "::error::The page is not stamped with the channel. Nothing was published."; exit 1; }
+          grep -q "<meta name=\"dc-build\" content=\"$TAG\">" site/index.html || { echo "::error::The page is not stamped with the build $TAG. Nothing was published."; exit 1; }
+          grep -q -F "$DC_NOW" site/index.html || { echo "::error::The page does not hold the moment $DC_NOW: $TAG is from before the app's DECISIONS #99. Nothing was published."; exit 1; }
+
+      - name: Publish to gh-pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./site
+          force_orphan: true
+          commit_message: "${{ inputs.tag }} ${{ steps.src.outputs.sha }}"
+
+      # A run for the tag already deployed publishes it again, and
+      # deployed.txt already holds it: nothing to commit, and nothing pushed.
+      - name: Record what was deployed
+        env:
+          SHA: ${{ steps.src.outputs.sha }}
+        run: |
+          echo "$TAG $SHA" > deployed.txt
+          git config user.name "deploy-bot"
+          git config user.email "deploy-bot@users.noreply.github.com"
+          git add deployed.txt
+          if git diff --cached --quiet; then
+            echo "deployed.txt already records $TAG $SHA."
+          else
+            git commit -m "Deployed $TAG $SHA"
+            git push
+          fi
