@@ -110,6 +110,28 @@ jobs:
           grep -q "<meta name=\"dc-build\" content=\"$TAG\">" site/index.html || { echo "::error::The page is not stamped with the build $TAG. Nothing was published."; exit 1; }
           grep -q -F "$DC_NOW" site/index.html || { echo "::error::The page does not hold the moment $DC_NOW: $TAG is from before the app's DECISIONS #99. Nothing was published."; exit 1; }
 
+      # The app's page names the live site in four head tags - og:url,
+      # og:image, og:image:secure_url and twitter:image - so a link to the beta
+      # previewed with the live site's image. Here, in the built page, that
+      # exact address becomes this site's. A count that is not four, any of
+      # the old address left, or no og-image.png for the tags to point at
+      # stops the run, before anything is published.
+      - name: Point the link preview at the beta
+        env:
+          LIVE_SITE: https://kilgoretrout853.github.io/dragoncon-planner/
+          BETA_SITE: https://kilgoretrout853.github.io/dragoncon-planner-beta/
+        run: |
+          [ -f site/og-image.png ] || { echo "::error::The build has no og-image.png for the preview to point at. Nothing was published."; exit 1; }
+          old=$(grep -o -F "$LIVE_SITE" site/index.html | wc -l)
+          new=$(grep -o -F "$BETA_SITE" site/index.html | wc -l)
+          [ "$old" -eq 4 ] || { echo "::error::The page names the live site $old times, not the four of its preview tags. Nothing was published."; exit 1; }
+          perl -0777 -pi -e 's/\Q$ENV{LIVE_SITE}\E/$ENV{BETA_SITE}/g' site/index.html
+          left=$(grep -o -F "$LIVE_SITE" site/index.html | wc -l)
+          made=$(( $(grep -o -F "$BETA_SITE" site/index.html | wc -l) - new ))
+          [ "$left" -eq 0 ] || { echo "::error::The page still names the live site $left times. Nothing was published."; exit 1; }
+          [ "$made" -eq 4 ] || { echo "::error::$made of the page's addresses were changed, not four. Nothing was published."; exit 1; }
+          echo "Changed $made: the page's preview tags name $BETA_SITE."
+
       - name: Publish to gh-pages
         uses: peaceiris/actions-gh-pages@v4
         with:
