@@ -18,6 +18,8 @@ The build is the app's own, with these set (the app's README, "The next site"; i
 
 A tag from before the app read `DC_NOW` (its PR #117) would build at the real clock with the email step on, so the workflow stops such a build before it is published.
 
+The deploy also points the page's four link-preview tags (`og:url`, `og:image`, `og:image:secure_url`, `twitter:image`) at this site: the app's page names the live site there, and a link to the beta would otherwise preview with the live site's image.
+
 ## Bringing the beta forward
 
 Two steps, each by hand.
